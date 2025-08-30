@@ -17,6 +17,8 @@ interface EmbeddingJob {
     column: string;
     new_text: string;
     model: string;
+    retry_of_msg_id?: number;
+    retry_count?: number;
   };
 }
 
@@ -41,12 +43,79 @@ async function generateEmbedding(text: string, model = "text-embedding-3-small")
   return data.data[0].embedding;
 }
 
+function categorizeError(error: Error): { type: string; category: string } {
+  const message = error.message.toLowerCase();
+  
+  // OpenAI API errors
+  if (message.includes('openai api error: 429')) {
+    return { type: 'api_rate_limit', category: 'OpenAI rate limit exceeded' };
+  }
+  if (message.includes('openai api error: 401')) {
+    return { type: 'api_auth_error', category: 'OpenAI authentication failed' };
+  }
+  if (message.includes('openai api error: 500')) {
+    return { type: 'api_server_error', category: 'OpenAI server error' };
+  }
+  if (message.includes('openai api error')) {
+    return { type: 'api_error', category: 'OpenAI API error' };
+  }
+  
+  // Validation errors
+  if (message.includes('text too long') || message.includes('token limit')) {
+    return { type: 'validation_error', category: 'Text content too long' };
+  }
+  if (message.includes('empty text') || message.includes('no content')) {
+    return { type: 'validation_error', category: 'Empty or invalid text content' };
+  }
+  
+  // Database errors
+  if (message.includes('failed to update row') || message.includes('database error')) {
+    return { type: 'database_error', category: 'Database update failed' };
+  }
+  
+  // Network/timeout errors
+  if (message.includes('timeout') || message.includes('network')) {
+    return { type: 'network_error', category: 'Network or timeout error' };
+  }
+  
+  // Default
+  return { type: 'unknown_error', category: 'Unknown error occurred' };
+}
+
 async function processEmbeddingJob(supabase: any, job: EmbeddingJob): Promise<void> {
-  const { table, schema, row_id, column, new_text, model } = job.message;
+  const { table, schema = 'public', row_id, column, new_text, model } = job.message;
+  const startTime = Date.now();
+  
+  // Log job start
+  try {
+    await supabase.rpc('log_job_start', {
+      p_msg_id: job.msg_id,
+      p_table_name: table,
+      p_schema_name: schema,
+      p_row_id: row_id,
+      p_column_name: column
+    });
+  } catch (logError) {
+    console.warn('Failed to log job start:', logError);
+  }
   
   try {
+    // Validation
+    if (!new_text || typeof new_text !== 'string' || new_text.trim().length === 0) {
+      throw new Error('Empty or invalid text content provided');
+    }
+    
+    if (new_text.length > 50000) { // Reasonable limit for embedding
+      throw new Error('Text too long for embedding (max 50,000 characters)');
+    }
+    
     // Generate embedding
+    console.log(`Processing embedding for ${table}.${row_id} (${new_text.length} chars)`);
     const embedding = await generateEmbedding(new_text, model.split("/")[1]);
+    
+    if (!embedding || !Array.isArray(embedding) || embedding.length === 0) {
+      throw new Error('Invalid embedding generated from OpenAI');
+    }
     
     // Update the row with the embedding
     const { error: updateError } = await supabase
@@ -70,12 +139,59 @@ async function processEmbeddingJob(supabase: any, job: EmbeddingJob): Promise<vo
 
     if (deleteError) {
       console.error("Failed to delete job from queue:", deleteError);
+      // Don't throw here - the embedding was successful
     }
 
-    console.log(`Successfully processed embedding for ${table}.${row_id}`);
+    const processingTime = Date.now() - startTime;
+    
+    // Log successful completion
+    try {
+      await supabase.rpc('log_job_completion', {
+        p_msg_id: job.msg_id,
+        p_status: 'completed',
+        p_processing_time_ms: processingTime
+      });
+    } catch (logError) {
+      console.warn('Failed to log job completion:', logError);
+    }
+
+    console.log(`Successfully processed embedding for ${table}.${row_id} in ${processingTime}ms`);
+    
   } catch (error) {
-    console.error(`Failed to process job ${job.msg_id}:`, error);
-    // Job will be retried due to visibility timeout
+    const processingTime = Date.now() - startTime;
+    const errorInfo = categorizeError(error instanceof Error ? error : new Error(String(error)));
+    
+    // Log failed completion
+    try {
+      await supabase.rpc('log_job_completion', {
+        p_msg_id: job.msg_id,
+        p_status: 'failed',
+        p_processing_time_ms: processingTime,
+        p_error_message: error instanceof Error ? error.message : String(error),
+        p_error_type: errorInfo.type
+      });
+    } catch (logError) {
+      console.warn('Failed to log job failure:', logError);
+    }
+    
+    console.error(`Failed to process job ${job.msg_id} for ${table}.${row_id} (${errorInfo.category}):`, error);
+    
+    // Job will be retried due to visibility timeout unless it's a validation error
+    if (errorInfo.type === 'validation_error') {
+      // For validation errors, delete the job to prevent infinite retries
+      try {
+        await supabase.rpc("pgmq_delete", {
+          queue_name: "embedding_jobs",
+          msg_id: job.msg_id,
+        });
+        console.log(`Deleted job ${job.msg_id} due to validation error (won't retry)`);
+      } catch (deleteError) {
+        console.error(`Failed to delete invalid job ${job.msg_id}:`, deleteError);
+      }
+    }
+    
+    // Re-throw to indicate job failure
+    throw error;
   }
 }
 

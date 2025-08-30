@@ -47,12 +47,34 @@ async function testSemanticSearch() {
       try {
         const results = await semanticSearch.searchDocuments('test query', { topK: 1 });
         if (results.error) {
-          console.log('⚠️  Search test failed (expected if DB not set up):', results.error.message);
+          console.log('⚠️  Semantic search test failed (expected if DB not set up):', results.error.message);
         } else {
-          console.log('✅ Search test passed:', results.data?.length || 0, 'results');
+          console.log('✅ Semantic search test passed:', results.data?.length || 0, 'results');
         }
       } catch (error) {
-        console.log('⚠️  Search test failed (expected if DB not set up):', error.message);
+        console.log('⚠️  Semantic search test failed (expected if DB not set up):', error.message);
+      }
+
+      // Test hybrid search (this might fail if DB isn't set up, which is expected)
+      try {
+        const hybridResults = await semanticSearch.hybridSearchDocuments('apple earnings', { 
+          topK: 1,
+          alpha: 0.3,
+          beta: 0.7 
+        });
+        if (hybridResults.error) {
+          console.log('⚠️  Hybrid search test failed (expected if DB not set up):', hybridResults.error.message);
+        } else {
+          console.log('✅ Hybrid search test passed:', hybridResults.data?.length || 0, 'results');
+          if (hybridResults.data && hybridResults.data.length > 0) {
+            const result = hybridResults.data[0];
+            console.log('   Sample hybrid scores - Total:', result.hybrid_score?.toFixed(3), 
+                       'BM25:', result.bm25_score?.toFixed(3), 
+                       'Vector:', result.vector_score?.toFixed(3));
+          }
+        }
+      } catch (error) {
+        console.log('⚠️  Hybrid search test failed (expected if DB not set up):', error.message);
       }
       
     } catch (error) {

@@ -3,6 +3,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { createSemanticSearch } from './index';
+import * as dotenv from 'dotenv';
 
 const PACKAGE_ROOT = path.join(__dirname, '..');
 
@@ -91,16 +93,35 @@ async function example() {
   // Register a table for semantic search
   await semanticSearch.registerEmbedding('documents', 'content');
 
-  // Search for similar content
-  const results = await semanticSearch.searchDocuments('machine learning algorithms', {
+  // Semantic search example
+  console.log('🔍 Semantic Search Results:');
+  const semanticResults = await semanticSearch.searchDocuments('machine learning algorithms', {
     topK: 5,
     threshold: 0.7
   });
 
-  if (results.error) {
-    console.error('Search failed:', results.error);
+  if (semanticResults.error) {
+    console.error('Semantic search failed:', semanticResults.error);
   } else {
-    console.log('Search results:', results.data);
+    console.log('Semantic results:', semanticResults.data);
+  }
+
+  // Hybrid search example - combines semantic + keyword matching
+  console.log('\\n🔍 Hybrid Search Results:');
+  const hybridResults = await semanticSearch.hybridSearchDocuments('apple earnings report', {
+    topK: 5,
+    alpha: 0.3,  // 30% weight for keyword/BM25 matching
+    beta: 0.7,   // 70% weight for semantic similarity
+    threshold: 0.1
+  });
+
+  if (hybridResults.error) {
+    console.error('Hybrid search failed:', hybridResults.error);
+  } else {
+    hybridResults.data?.forEach((doc, i) => {
+      console.log(\`\${i+1}. Score: \${doc.hybrid_score.toFixed(3)} (BM25: \${doc.bm25_score.toFixed(3)}, Vector: \${doc.vector_score.toFixed(3)})\`);
+      console.log(\`   Content: \${doc.content.substring(0, 100)}...\\n\`);
+    });
   }
 }
 
@@ -116,6 +137,85 @@ example().catch(console.error);
     }
   } catch (error) {
     console.error('❌ Failed to create example file:', error);
+  }
+}
+
+async function showStatus() {
+  // Load environment variables
+  dotenv.config();
+  
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  
+  if (!supabaseUrl || !supabaseKey || !openaiKey) {
+    console.error(`❌ Missing required environment variables:
+    
+Required:
+  - SUPABASE_URL=${supabaseUrl ? '✅' : '❌'}
+  - SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY=${supabaseKey ? '✅' : '❌'}
+  - OPENAI_API_KEY=${openaiKey ? '✅' : '❌'}
+  
+💡 Make sure your .env file is configured correctly.`);
+    process.exit(1);
+  }
+  
+  try {
+    console.log('🔍 Checking embedding queue status...\n');
+    
+    const semanticSearch = createSemanticSearch(supabaseUrl, supabaseKey, openaiKey);
+    
+    // Get queue status
+    const queueStatus = await semanticSearch.getQueueStatus();
+    if (queueStatus.error) {
+      console.error('❌ Failed to get queue status:', queueStatus.error);
+      return;
+    }
+    
+    const status = queueStatus.data;
+    if (!status) {
+      console.error('❌ No status data received');
+      return;
+    }
+    
+    console.log('📊 Queue Status:');
+    console.log(`   Pending: ${status.queue.pending_messages} jobs`);
+    console.log(`   Processing: ${status.queue.processing_messages} jobs`);
+    console.log(`   Total in queue: ${status.queue.total_messages} jobs\n`);
+    
+    console.log('📈 Processing Metrics (24h):');
+    console.log(`   Completed: ${status.processing.completed_today} jobs`);
+    console.log(`   Failed: ${status.processing.failed_today} jobs`);
+    console.log(`   Success rate: ${status.processing.success_rate_24h}%`);
+    console.log(`   Avg processing time: ${status.processing.avg_processing_time_ms}ms\n`);
+    
+    console.log('⚠️  Failure Analysis:');
+    console.log(`   Recent failures (1h): ${status.failures.recent_failures}`);
+    console.log(`   Stuck jobs: ${status.failures.stuck_jobs}`);
+    
+    if (Object.keys(status.failures.failure_types).length > 0) {
+      console.log('   Failure types:');
+      Object.entries(status.failures.failure_types).forEach(([type, count]) => {
+        console.log(`     ${type}: ${count}`);
+      });
+    }
+    
+    // Get recent failed jobs
+    const failedJobs = await semanticSearch.getFailedJobs(false);
+    if (failedJobs.data && failedJobs.data.length > 0) {
+      console.log(`\n❌ Recent Failed Jobs (${Math.min(5, failedJobs.data.length)} of ${failedJobs.data.length}):`);
+      failedJobs.data.slice(0, 5).forEach((job, i) => {
+        console.log(`   ${i + 1}. Table: ${job.table_name}, Row: ${job.row_id}`);
+        console.log(`      Error: ${job.error_type} - ${job.error_message?.substring(0, 80)}...`);
+        console.log(`      Can retry: ${job.can_retry ? '✅' : '❌'}\n`);
+      });
+    }
+    
+    console.log(`🕐 Last updated: ${new Date(status.last_updated).toLocaleString()}`);
+    
+  } catch (error) {
+    console.error('❌ Status check failed:', error);
+    process.exit(1);
   }
 }
 
@@ -163,6 +263,8 @@ async function main() {
    # supabase-semantic-search-sql/03_trigger_function.sql
    # supabase-semantic-search-sql/04_search_functions.sql
    # supabase-semantic-search-sql/05_example_table.sql
+   # supabase-semantic-search-sql/06_hybrid_search_functions.sql
+   # supabase-semantic-search-sql/07_observability_functions.sql
 
 3. 🚀 Deploy Edge Function:
    supabase functions deploy embed-worker --project-ref your-project-ref
@@ -175,6 +277,10 @@ async function main() {
       `);
       break;
       
+    case 'status':
+      await showStatus();
+      break;
+      
     case 'help':
     case '--help':
     case '-h':
@@ -183,10 +289,12 @@ Usage: npx supabase-semantic-search [command]
 
 Commands:
   init     Initialize semantic search setup (default)
+  status   Show embedding queue status and metrics
   help     Show this help message
 
 Examples:
   npx supabase-semantic-search init
+  npx supabase-semantic-search status
   npx supabase-semantic-search help
       `);
       break;

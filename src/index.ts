@@ -12,6 +12,27 @@ export interface SemanticSearchOptions {
 }
 
 /**
+ * Score normalization methods for hybrid search
+ */
+export type ScoreNormalization = 'min-max' | 'z-score' | 'none';
+
+/**
+ * Options for hybrid search operations
+ */
+export interface HybridSearchOptions {
+  /** Maximum number of results to return (default: 5) */
+  topK?: number;
+  /** Weight for BM25/full-text search score (default: 0.3) */
+  alpha?: number;
+  /** Weight for vector similarity score (default: 0.7) */
+  beta?: number;
+  /** Score normalization method (default: 'min-max') */
+  normalization?: ScoreNormalization;
+  /** Minimum hybrid score threshold for results (default: 0.1) */
+  threshold?: number;
+}
+
+/**
  * Result of a semantic search operation
  */
 export interface SemanticSearchResult {
@@ -19,6 +40,116 @@ export interface SemanticSearchResult {
   data: any[] | null;
   /** Error object, or null if successful */
   error: Error | null;
+}
+
+/**
+ * Result of a hybrid search operation
+ */
+export interface HybridSearchResult {
+  /** Search results data with hybrid scores, or null if error occurred */
+  data: HybridSearchResultItem[] | null;
+  /** Error object, or null if successful */
+  error: Error | null;
+}
+
+/**
+ * Individual result item from hybrid search
+ */
+export interface HybridSearchResultItem {
+  /** The original data from the matched row */
+  [key: string]: any;
+  /** Combined hybrid score (alpha * bm25_score + beta * vector_score) */
+  hybrid_score: number;
+  /** Raw BM25/full-text search score */
+  bm25_score: number;
+  /** Raw vector similarity score */
+  vector_score: number;
+}
+
+/**
+ * Queue status information from observability system
+ */
+export interface QueueStatus {
+  queue: {
+    total_messages: number;
+    pending_messages: number;
+    processing_messages: number;
+  };
+  processing: {
+    total_processed: number;
+    completed_today: number;
+    failed_today: number;
+    avg_processing_time_ms: number;
+    success_rate_24h: number;
+  };
+  failures: {
+    recent_failures: number;
+    failure_types: Record<string, number>;
+    stuck_jobs: number;
+  };
+  last_updated: string;
+}
+
+/**
+ * Job history entry
+ */
+export interface JobHistoryEntry {
+  id: number;
+  msg_id: number;
+  table_name: string;
+  row_id: string;
+  status: 'processing' | 'completed' | 'failed';
+  error_message: string | null;
+  error_type: string | null;
+  processing_time_ms: number | null;
+  retry_count: number;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Failed job information
+ */
+export interface FailedJob {
+  id: number;
+  msg_id: number;
+  table_name: string;
+  row_id: string;
+  error_message: string | null;
+  error_type: string | null;
+  retry_count: number;
+  last_failure_at: string;
+  can_retry: boolean;
+}
+
+/**
+ * Processing metrics and performance data
+ */
+export interface ProcessingMetrics {
+  time_window_hours: number;
+  summary: {
+    total_completed: number;
+    total_failed: number;
+    avg_processing_time: number;
+    median_processing_time: number;
+    p95_processing_time: number;
+    max_processing_time: number;
+  };
+  hourly_data: Array<{
+    hour: string;
+    completed: number;
+    failed: number;
+    avg_time_ms: number;
+  }>;
+  generated_at: string;
+}
+
+/**
+ * Result from retrying failed jobs
+ */
+export interface RetryResult {
+  retried_jobs: number;
+  timestamp: string;
 }
 
 /**
@@ -211,6 +342,501 @@ export class SupabaseSemanticSearch {
     } catch (error) {
       return { 
         error: error instanceof Error ? error : new Error('Unknown error occurred') 
+      };
+    }
+  }
+
+  /**
+   * Normalize search scores using specified method
+   * 
+   * @private
+   * @param scores - Array of score objects with value and index
+   * @param method - Normalization method to use
+   * @returns Array of normalized scores
+   */
+  private normalizeScores(scores: { value: number; index: number }[], method: ScoreNormalization): number[] {
+    if (method === 'none' || scores.length === 0) {
+      return scores.map(s => s.value);
+    }
+
+    const values = scores.map(s => s.value);
+    const maxValue = Math.max(...values);
+    const minValue = Math.min(...values);
+
+    if (method === 'min-max') {
+      const range = maxValue - minValue;
+      if (range === 0) return values.map(() => 1);
+      return values.map(v => (v - minValue) / range);
+    }
+
+    if (method === 'z-score') {
+      const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+      const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+      const stdDev = Math.sqrt(variance);
+      if (stdDev === 0) return values.map(() => 0);
+      return values.map(v => (v - mean) / stdDev);
+    }
+
+    return values;
+  }
+
+  /**
+   * Perform hybrid search combining semantic similarity and full-text search
+   * 
+   * @param table - Name of the table to search in
+   * @param contentColumn - Name of the text column to search in
+   * @param query - Natural language search query
+   * @param options - Hybrid search options (topK, alpha, beta, normalization, threshold)
+   * @returns Promise with hybrid search results or error
+   * 
+   * @example
+   * ```typescript
+   * const results = await semanticSearch.hybridSearch('documents', 'content', 'machine learning', {
+   *   topK: 10,
+   *   alpha: 0.3,    // BM25 weight
+   *   beta: 0.7,     // Vector weight
+   *   normalization: 'min-max'
+   * });
+   * 
+   * if (results.error) {
+   *   console.error('Search failed:', results.error);
+   * } else {
+   *   results.data?.forEach(item => {
+   *     console.log(`Hybrid: ${item.hybrid_score.toFixed(3)}, BM25: ${item.bm25_score.toFixed(3)}, Vector: ${item.vector_score.toFixed(3)}`);
+   *   });
+   * }
+   * ```
+   */
+  async hybridSearch(
+    table: string,
+    contentColumn: string,
+    query: string,
+    options: HybridSearchOptions = {}
+  ): Promise<HybridSearchResult> {
+    const { 
+      topK = 5, 
+      alpha = 0.3, 
+      beta = 0.7, 
+      normalization = 'min-max',
+      threshold = 0.1 
+    } = options;
+
+    try {
+      // Generate embedding for query
+      const embeddingResponse = await this.openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: query,
+      });
+
+      const queryEmbedding = embeddingResponse.data[0].embedding;
+
+      // Use server-side hybrid search if normalization is min-max (default)
+      if (normalization === 'min-max') {
+        const { data, error } = await this.supabase.rpc('hybrid_search', {
+          table_name: table,
+          content_column: contentColumn,
+          search_query: query,
+          query_embedding: `[${queryEmbedding.join(',')}]`,
+          alpha: alpha,
+          beta: beta,
+          k: topK * 2, // Get more results for better scoring
+        });
+
+        if (error) {
+          return { data: null, error: new Error(error.message) };
+        }
+
+        const results = data?.map((item: any) => ({
+          ...item.row_data,
+          hybrid_score: item.hybrid_score,
+          bm25_score: item.bm25_score,
+          vector_score: item.vector_score,
+        })) || [];
+
+        const filteredResults = results
+          .filter((item: HybridSearchResultItem) => item.hybrid_score >= threshold)
+          .slice(0, topK);
+
+        return { data: filteredResults, error: null };
+      }
+
+      // Client-side merging for custom normalization methods
+      const [vectorResults, fulltextResults] = await Promise.all([
+        this.supabase.rpc('semantic_search', {
+          table_name: table,
+          query_embedding: `[${queryEmbedding.join(',')}]`,
+          k: topK * 2,
+        }),
+        this.supabase.rpc('fulltext_search', {
+          table_name: table,
+          content_column: contentColumn,
+          search_query: query,
+          k: topK * 2,
+        })
+      ]);
+
+      if (vectorResults.error) {
+        return { data: null, error: new Error(vectorResults.error.message) };
+      }
+      if (fulltextResults.error) {
+        return { data: null, error: new Error(fulltextResults.error.message) };
+      }
+
+      // Create lookup maps for merging
+      const vectorMap = new Map();
+      vectorResults.data?.forEach((item: any, index: number) => {
+        const key = JSON.stringify(item.row_data);
+        vectorMap.set(key, { score: item.similarity, index });
+      });
+
+      const fulltextMap = new Map();
+      fulltextResults.data?.forEach((item: any, index: number) => {
+        const key = JSON.stringify(item.row_data);
+        fulltextMap.set(key, { score: item.bm25_score, index });
+      });
+
+      // Combine results
+      const allKeys = new Set([...vectorMap.keys(), ...fulltextMap.keys()]);
+      const combinedResults: Array<{
+        data: any;
+        vectorScore: number;
+        bm25Score: number;
+      }> = [];
+
+      allKeys.forEach(key => {
+        const vectorResult = vectorMap.get(key);
+        const fulltextResult = fulltextMap.get(key);
+        
+        combinedResults.push({
+          data: JSON.parse(key),
+          vectorScore: vectorResult?.score || 0,
+          bm25Score: fulltextResult?.score || 0,
+        });
+      });
+
+      // Normalize scores
+      const vectorScores = combinedResults.map((r, i) => ({ value: r.vectorScore, index: i }));
+      const bm25Scores = combinedResults.map((r, i) => ({ value: r.bm25Score, index: i }));
+
+      const normalizedVectorScores = this.normalizeScores(vectorScores, normalization);
+      const normalizedBm25Scores = this.normalizeScores(bm25Scores, normalization);
+
+      // Calculate hybrid scores and create final results
+      const hybridResults: HybridSearchResultItem[] = combinedResults.map((result, index) => ({
+        ...result.data,
+        hybrid_score: alpha * normalizedBm25Scores[index] + beta * normalizedVectorScores[index],
+        bm25_score: result.bm25Score,
+        vector_score: result.vectorScore,
+      }));
+
+      // Filter and sort results
+      const filteredResults = hybridResults
+        .filter(item => item.hybrid_score >= threshold)
+        .sort((a, b) => b.hybrid_score - a.hybrid_score)
+        .slice(0, topK);
+
+      return { data: filteredResults, error: null };
+    } catch (error) {
+      return { 
+        data: null, 
+        error: error instanceof Error ? error : new Error('Unknown error occurred') 
+      };
+    }
+  }
+
+  /**
+   * Convenience method for hybrid search on documents table specifically
+   * 
+   * @param query - Natural language search query
+   * @param options - Hybrid search options (topK, alpha, beta, normalization, threshold)
+   * @returns Promise with document hybrid search results or error
+   * 
+   * @example
+   * ```typescript
+   * const results = await semanticSearch.hybridSearchDocuments('contract renewal process', {
+   *   alpha: 0.4,  // Favor exact keyword matches more
+   *   beta: 0.6,   // Still use semantic similarity
+   * });
+   * 
+   * if (!results.error) {
+   *   results.data?.forEach(doc => {
+   *     console.log(`${doc.content.substring(0, 100)}... (Score: ${doc.hybrid_score.toFixed(3)})`);
+   *   });
+   * }
+   * ```
+   */
+  async hybridSearchDocuments(
+    query: string,
+    options: HybridSearchOptions = {}
+  ): Promise<HybridSearchResult> {
+    const { 
+      topK = 5, 
+      alpha = 0.3, 
+      beta = 0.7, 
+      normalization = 'min-max',
+      threshold = 0.1 
+    } = options;
+
+    try {
+      const embeddingResponse = await this.openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: query,
+      });
+
+      const queryEmbedding = embeddingResponse.data[0].embedding;
+
+      // Use server-side hybrid search function for documents
+      const { data, error } = await this.supabase.rpc('hybrid_search_documents', {
+        search_query: query,
+        query_embedding: `[${queryEmbedding.join(',')}]`,
+        alpha: alpha,
+        beta: beta,
+        k: topK * 2,
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      const filteredResults = (data || [])
+        .filter((item: any) => item.hybrid_score >= threshold)
+        .slice(0, topK)
+        .map((item: any) => ({
+          id: item.id,
+          content: item.content,
+          embedding_model: item.embedding_model,
+          embedding_updated_at: item.embedding_updated_at,
+          hybrid_score: item.hybrid_score,
+          bm25_score: item.bm25_score,
+          vector_score: item.vector_score,
+        }));
+
+      return { data: filteredResults, error: null };
+    } catch (error) {
+      return { 
+        data: null, 
+        error: error instanceof Error ? error : new Error('Unknown error occurred') 
+      };
+    }
+  }
+
+  /**
+   * Get comprehensive queue status including pending jobs, processing metrics, and failures
+   * 
+   * @returns Promise with queue status data or error
+   * 
+   * @example
+   * ```typescript
+   * const status = await semanticSearch.getQueueStatus();
+   * if (status.error) {
+   *   console.error('Failed to get queue status:', status.error);
+   * } else {
+   *   console.log('Pending jobs:', status.data.queue.pending_messages);
+   *   console.log('Success rate:', status.data.processing.success_rate_24h + '%');
+   * }
+   * ```
+   */
+  async getQueueStatus(): Promise<{ data: QueueStatus | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_embedding_queue_status');
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as QueueStatus, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get recent job processing history
+   * 
+   * @param limit - Maximum number of jobs to return (default: 50)
+   * @param statusFilter - Filter by job status ('processing', 'completed', 'failed')
+   * @returns Promise with job history data or error
+   * 
+   * @example
+   * ```typescript
+   * // Get last 20 failed jobs
+   * const history = await semanticSearch.getJobHistory(20, 'failed');
+   * if (!history.error) {
+   *   history.data?.forEach(job => {
+   *     console.log(`Job ${job.msg_id}: ${job.error_message}`);
+   *   });
+   * }
+   * ```
+   */
+  async getJobHistory(
+    limit: number = 50, 
+    statusFilter?: 'processing' | 'completed' | 'failed'
+  ): Promise<{ data: JobHistoryEntry[] | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_embedding_job_history', {
+        limit_count: limit,
+        status_filter: statusFilter || null
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as JobHistoryEntry[], error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get failed jobs with retry information
+   * 
+   * @param includeRetried - Include jobs that have already been retried (default: false)
+   * @returns Promise with failed jobs data or error
+   * 
+   * @example
+   * ```typescript
+   * const failedJobs = await semanticSearch.getFailedJobs();
+   * if (!failedJobs.error) {
+   *   const retryableJobs = failedJobs.data?.filter(job => job.can_retry) || [];
+   *   console.log(`${retryableJobs.length} jobs can be retried`);
+   * }
+   * ```
+   */
+  async getFailedJobs(
+    includeRetried: boolean = false
+  ): Promise<{ data: FailedJob[] | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_failed_embedding_jobs', {
+        include_retried: includeRetried
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as FailedJob[], error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Retry failed jobs that are eligible for retry
+   * 
+   * @param maxRetries - Maximum retry count for jobs (default: 3)
+   * @param minAgeMinutes - Minimum age in minutes before retrying (default: 5)
+   * @returns Promise with retry result or error
+   * 
+   * @example
+   * ```typescript
+   * const result = await semanticSearch.retryFailedJobs();
+   * if (!result.error) {
+   *   console.log(`Retried ${result.data.retried_jobs} failed jobs`);
+   * }
+   * ```
+   */
+  async retryFailedJobs(
+    maxRetries: number = 3,
+    minAgeMinutes: number = 5
+  ): Promise<{ data: RetryResult | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('retry_failed_jobs', {
+        max_retries: maxRetries,
+        min_age_minutes: minAgeMinutes
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as RetryResult, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get detailed processing metrics and performance data
+   * 
+   * @param timeWindowHours - Time window in hours for metrics (default: 24)
+   * @returns Promise with processing metrics or error
+   * 
+   * @example
+   * ```typescript
+   * // Get performance metrics for last 12 hours
+   * const metrics = await semanticSearch.getProcessingMetrics(12);
+   * if (!metrics.error) {
+   *   console.log('Average processing time:', metrics.data.summary.avg_processing_time + 'ms');
+   *   console.log('95th percentile:', metrics.data.summary.p95_processing_time + 'ms');
+   * }
+   * ```
+   */
+  async getProcessingMetrics(
+    timeWindowHours: number = 24
+  ): Promise<{ data: ProcessingMetrics | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_processing_metrics', {
+        time_window_hours: timeWindowHours
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as ProcessingMetrics, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Clean up old job logs to maintain database performance
+   * 
+   * @param keepDays - Number of days to keep logs (default: 30)
+   * @returns Promise with cleanup result or error
+   * 
+   * @example
+   * ```typescript
+   * // Clean up logs older than 7 days
+   * const result = await semanticSearch.cleanupJobLogs(7);
+   * if (!result.error) {
+   *   console.log(`Cleaned up ${result.data.deleted_records} old job logs`);
+   * }
+   * ```
+   */
+  async cleanupJobLogs(
+    keepDays: number = 30
+  ): Promise<{ data: { deleted_records: number; cleanup_date: string } | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('cleanup_job_logs', {
+        keep_days: keepDays
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
       };
     }
   }
