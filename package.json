@@ -1,14 +1,15 @@
 {
   "name": "supabase-semantic-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Easy-to-use semantic search plugin for Supabase with automatic embedding generation and vector similarity search",
+  "type": "module",
   "author": "Michael Jupp",
   "license": "MIT",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "bin": {
-    "supabase-semantic-search": "dist/cli.js"
+    "supabase-semantic-search": "dist/cli.cjs"
   },
   "exports": {
     ".": {
@@ -28,13 +29,13 @@
     "build": "npm run clean && npm run build:cjs && npm run build:esm && npm run build:cli && npm run postbuild",
     "build:cjs": "npx tsc -p tsconfig.cjs.json",
     "build:esm": "npx tsc -p tsconfig.esm.json && node scripts/fix-esm.js",
-    "build:cli": "npx tsc -p tsconfig.cli.json",
-    "postbuild": "chmod +x dist/cli.js",
+    "build:cli": "npx tsc -p tsconfig.cli.json && move dist\\cli.js dist\\cli.cjs",
+    "postbuild": "chmod +x dist/cli.cjs",
     "dev": "npx tsc --watch",
     "test": "node test/example.js",
     "test:env": "node -r dotenv/config test/example.js",
     "prepublishOnly": "npm run build && npm test",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"const fs=require('fs'); if(fs.existsSync('dist')) fs.rmSync('dist', {recursive:true, force:true})\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.38.0",

@@ -1,20 +1,18 @@
 #!/usr/bin/env node
 
-import * as fs from 'fs';
-import * as path from 'path';
-import { execSync } from 'child_process';
-import { createSemanticSearch } from './index';
-import * as dotenv from 'dotenv';
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
 
 const PACKAGE_ROOT = path.join(__dirname, '..');
 
 function printBanner() {
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
-║         Supabase Semantic Search Setup               ║
+║         Supabase Semantic Search Setup                ║
 ║                                                       ║
-║  Initialize your project with semantic search        ║
-║  capabilities using OpenAI embeddings and pgvector   ║
+║  Initialize your project with semantic search         ║
+║  capabilities using OpenAI embeddings and pgvector    ║
 ╚═══════════════════════════════════════════════════════╝
   `);
 }
@@ -36,7 +34,7 @@ function copyDirectory(src: string, dest: string, description: string) {
     }
 
     const files = fs.readdirSync(src);
-    files.forEach(file => {
+    files.forEach((file: string) => {
       const srcPath = path.join(src, file);
       const destPath = path.join(dest, file);
       
@@ -82,12 +80,16 @@ OPENAI_API_KEY=your-openai-api-key
 
 function createExampleUsage() {
   const exampleCode = `import { createSemanticSearch } from 'supabase-semantic-search';
+import dotenv from 'dotenv';
+
+// Load environment variables from .env file
+dotenv.config();
 
 async function example() {
   const semanticSearch = createSemanticSearch(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_ANON_KEY!,
-    process.env.OPENAI_API_KEY!
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY,
+    process.env.OPENAI_API_KEY
   );
 
   // Register a table for semantic search
@@ -142,7 +144,7 @@ example().catch(console.error);
 
 async function showStatus() {
   // Load environment variables
-  dotenv.config();
+  require('dotenv').config();
   
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
@@ -163,6 +165,7 @@ Required:
   try {
     console.log('🔍 Checking embedding queue status...\n');
     
+    const { createSemanticSearch } = require('./index');
     const semanticSearch = createSemanticSearch(supabaseUrl, supabaseKey, openaiKey);
     
     // Get queue status
@@ -204,7 +207,7 @@ Required:
     const failedJobs = await semanticSearch.getFailedJobs(false);
     if (failedJobs.data && failedJobs.data.length > 0) {
       console.log(`\n❌ Recent Failed Jobs (${Math.min(5, failedJobs.data.length)} of ${failedJobs.data.length}):`);
-      failedJobs.data.slice(0, 5).forEach((job, i) => {
+      failedJobs.data.slice(0, 5).forEach((job: any, i: number) => {
         console.log(`   ${i + 1}. Table: ${job.table_name}, Row: ${job.row_id}`);
         console.log(`      Error: ${job.error_type} - ${job.error_message?.substring(0, 80)}...`);
         console.log(`      Can retry: ${job.can_retry ? '✅' : '❌'}\n`);

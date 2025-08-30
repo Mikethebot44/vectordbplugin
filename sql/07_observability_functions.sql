@@ -19,10 +19,10 @@ create table if not exists embedding_job_log (
   completed_at timestamptz,
   
   -- Add indexes for common queries
-  index (status),
-  index (created_at),
-  index (table_name, row_id),
-  index (msg_id)
+  CREATE INDEX IF NOT EXISTS idx_embedding_job_log_status ON embedding_job_log (status);
+  CREATE INDEX IF NOT EXISTS idx_embedding_job_log_created_at ON embedding_job_log (created_at);
+  CREATE INDEX IF NOT EXISTS idx_embedding_job_log_table_row ON embedding_job_log (table_name, row_id);
+  CREATE INDEX IF NOT EXISTS idx_embedding_job_log_msg_id ON embedding_job_log (msg_id);
 );
 
 -- Get comprehensive queue status with job counts and metrics

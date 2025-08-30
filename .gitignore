@@ -4,3 +4,6 @@ dist/
 .env.local
 *.log
 .DS_Store
+supabase-semantic-search-functions/
+supabase-semantic-search-sql/
+semantic-search-example.js

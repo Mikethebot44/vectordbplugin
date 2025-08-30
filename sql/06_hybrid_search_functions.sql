@@ -79,10 +79,10 @@ begin
          coalesce(v.vector_score, 0) as vector_score,
          coalesce(f.bm25_score, 0) as bm25_score
        from vector_results v
-       full outer join fulltext_results f on v.row_data = f.row_data
+       full outer join fulltext_results f using (row_data)
      ),
      normalized_results as (
-       select *,
+       select row_data, vector_score, bm25_score,
          case 
            when max(vector_score) over() > 0 then 
              vector_score / max(vector_score) over()
@@ -132,50 +132,67 @@ create or replace function hybrid_search_documents(
 begin
   return query
     with vector_results as (
-      select d.id, d.content, d.embedding_model, d.embedding_updated_at,
-             1 - (d.embedding <=> query_embedding) as vector_score
-      from documents d
-      where d.embedding is not null
+      select 
+        doc.id as doc_id, 
+        doc.content as doc_content, 
+        doc.embedding_model as doc_embedding_model, 
+        doc.embedding_updated_at as doc_embedding_updated_at,
+        (1 - (doc.embedding <=> query_embedding)) as vector_score
+      from documents doc
+      where doc.embedding is not null
     ),
     fulltext_results as (
-      select d.id, d.content, d.embedding_model, d.embedding_updated_at,
-             ts_rank_cd(to_tsvector('english', d.content), plainto_tsquery('english', search_query)) as bm25_score
-      from documents d
-      where to_tsvector('english', d.content) @@ plainto_tsquery('english', search_query)
+      select 
+        doc.id as doc_id, 
+        doc.content as doc_content, 
+        doc.embedding_model as doc_embedding_model, 
+        doc.embedding_updated_at as doc_embedding_updated_at,
+        ts_rank_cd(to_tsvector('english', doc.content), plainto_tsquery('english', search_query)) as bm25_score
+      from documents doc
+      where to_tsvector('english', doc.content) @@ plainto_tsquery('english', search_query)
     ),
     combined_results as (
       select 
-        coalesce(v.id, f.id) as id,
-        coalesce(v.content, f.content) as content,
-        coalesce(v.embedding_model, f.embedding_model) as embedding_model,
-        coalesce(v.embedding_updated_at, f.embedding_updated_at) as embedding_updated_at,
-        coalesce(v.vector_score, 0) as vector_score,
-        coalesce(f.bm25_score, 0) as bm25_score
-      from vector_results v
-      full outer join fulltext_results f on v.id = f.id
+        coalesce(vr.doc_id, fr.doc_id) as result_id,
+        coalesce(vr.doc_content, fr.doc_content) as result_content,
+        coalesce(vr.doc_embedding_model, fr.doc_embedding_model) as result_embedding_model,
+        coalesce(vr.doc_embedding_updated_at, fr.doc_embedding_updated_at) as result_embedding_updated_at,
+        coalesce(vr.vector_score, 0.0) as result_vector_score,
+        coalesce(fr.bm25_score, 0.0) as result_bm25_score
+      from vector_results vr
+      full outer join fulltext_results fr on vr.doc_id = fr.doc_id
     ),
     normalized_results as (
-      select *,
+      select 
+        cr.result_id,
+        cr.result_content,
+        cr.result_embedding_model,
+        cr.result_embedding_updated_at,
+        cr.result_vector_score,
+        cr.result_bm25_score,
         case 
-          when max(vector_score) over() > 0 then 
-            vector_score / max(vector_score) over()
-          else 0 
+          when max(cr.result_vector_score) over() > 0 then 
+            cr.result_vector_score / max(cr.result_vector_score) over()
+          else 0.0 
         end as norm_vector_score,
         case 
-          when max(bm25_score) over() > 0 then 
-            bm25_score / max(bm25_score) over()
-          else 0 
+          when max(cr.result_bm25_score) over() > 0 then 
+            cr.result_bm25_score / max(cr.result_bm25_score) over()
+          else 0.0 
         end as norm_bm25_score
-      from combined_results
+      from combined_results cr
     )
     select 
-      id, content, embedding_model, embedding_updated_at,
-      (alpha * norm_bm25_score + beta * norm_vector_score) as hybrid_score,
-      bm25_score,
-      vector_score
-    from normalized_results
-    where (alpha * norm_bm25_score + beta * norm_vector_score) > 0
-    order by hybrid_score desc
+      nr.result_id::uuid,
+      nr.result_content::text,
+      nr.result_embedding_model::text,
+      nr.result_embedding_updated_at::timestamptz,
+      (alpha * nr.norm_bm25_score + beta * nr.norm_vector_score)::float as hybrid_score,
+      nr.result_bm25_score::float as bm25_score,
+      nr.result_vector_score::float as vector_score
+    from normalized_results nr
+    where (alpha * nr.norm_bm25_score + beta * nr.norm_vector_score) > 0
+    order by (alpha * nr.norm_bm25_score + beta * nr.norm_vector_score) desc
     limit k;
 end;
 $$ language plpgsql;
