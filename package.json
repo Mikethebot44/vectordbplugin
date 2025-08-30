@@ -1,22 +1,72 @@
 {
   "name": "supabase-semantic-search",
   "version": "0.1.0",
-  "description": "Supabase Semantic Search Plugin MVP",
+  "description": "Easy-to-use semantic search plugin for Supabase with automatic embedding generation and vector similarity search",
+  "author": "Michael Jupp",
+  "license": "MIT",
   "main": "dist/index.js",
+  "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "bin": {
+    "supabase-semantic-search": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "sql",
+    "supabase",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "npm run clean && npm run build:cjs && npm run build:esm && npm run build:cli && npm run postbuild",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:esm": "tsc -p tsconfig.esm.json && node scripts/fix-esm.js",
+    "build:cli": "tsc -p tsconfig.cli.json",
+    "postbuild": "chmod +x dist/cli.js",
     "dev": "tsc --watch",
-    "test": "node test/example.js"
+    "test": "node test/example.js",
+    "prepublishOnly": "npm run build && npm test",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.38.0",
     "openai": "^4.28.0"
   },
+  "peerDependencies": {
+    "@supabase/supabase-js": ">=2.0.0",
+    "openai": ">=4.0.0"
+  },
   "devDependencies": {
     "typescript": "^5.3.0",
     "@types/node": "^20.10.0"
   },
-  "keywords": ["supabase", "semantic-search", "vector", "embeddings"],
-  "license": "MIT"
+  "keywords": [
+    "supabase", 
+    "semantic-search", 
+    "vector-database", 
+    "embeddings", 
+    "openai", 
+    "pgvector", 
+    "similarity-search",
+    "ai",
+    "machine-learning"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mjupp/supabase-semantic-search.git"
+  },
+  "homepage": "https://github.com/mjupp/supabase-semantic-search#readme",
+  "bugs": {
+    "url": "https://github.com/mjupp/supabase-semantic-search/issues"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
 }

@@ -1,0 +1,52 @@
+# Development files
+src/
+test/
+scripts/
+.git/
+.github/
+
+# Build artifacts (keep only dist/)
+dist-esm/
+*.tsbuildinfo
+
+# Configuration files
+.env*
+.eslintrc*
+.prettierrc*
+tsconfig*.json
+jest.config.js
+.vscode/
+.idea/
+
+# Package manager files
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Temporary folders
+tmp/
+temp/
