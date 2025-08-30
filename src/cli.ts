@@ -91,16 +91,35 @@ async function example() {
   // Register a table for semantic search
   await semanticSearch.registerEmbedding('documents', 'content');
 
-  // Search for similar content
-  const results = await semanticSearch.searchDocuments('machine learning algorithms', {
+  // Semantic search example
+  console.log('🔍 Semantic Search Results:');
+  const semanticResults = await semanticSearch.searchDocuments('machine learning algorithms', {
     topK: 5,
     threshold: 0.7
   });
 
-  if (results.error) {
-    console.error('Search failed:', results.error);
+  if (semanticResults.error) {
+    console.error('Semantic search failed:', semanticResults.error);
   } else {
-    console.log('Search results:', results.data);
+    console.log('Semantic results:', semanticResults.data);
+  }
+
+  // Hybrid search example - combines semantic + keyword matching
+  console.log('\\n🔍 Hybrid Search Results:');
+  const hybridResults = await semanticSearch.hybridSearchDocuments('apple earnings report', {
+    topK: 5,
+    alpha: 0.3,  // 30% weight for keyword/BM25 matching
+    beta: 0.7,   // 70% weight for semantic similarity
+    threshold: 0.1
+  });
+
+  if (hybridResults.error) {
+    console.error('Hybrid search failed:', hybridResults.error);
+  } else {
+    hybridResults.data?.forEach((doc, i) => {
+      console.log(\`\${i+1}. Score: \${doc.hybrid_score.toFixed(3)} (BM25: \${doc.bm25_score.toFixed(3)}, Vector: \${doc.vector_score.toFixed(3)})\`);
+      console.log(\`   Content: \${doc.content.substring(0, 100)}...\\n\`);
+    });
   }
 }
 
@@ -163,6 +182,7 @@ async function main() {
    # supabase-semantic-search-sql/03_trigger_function.sql
    # supabase-semantic-search-sql/04_search_functions.sql
    # supabase-semantic-search-sql/05_example_table.sql
+   # supabase-semantic-search-sql/06_hybrid_search_functions.sql
 
 3. 🚀 Deploy Edge Function:
    supabase functions deploy embed-worker --project-ref your-project-ref
