@@ -1,3 +1,10 @@
+// Try to load dotenv for development convenience
+try {
+  require('dotenv').config();
+} catch (e) {
+  // dotenv not available, that's fine
+}
+
 const { createSemanticSearch, SupabaseSemanticSearch } = require('../dist/index.js');
 
 async function testSemanticSearch() {
@@ -16,6 +23,12 @@ async function testSemanticSearch() {
     console.error('❌ Module import test failed:', error.message);
     process.exit(1);
   }
+
+  // Debug: Show what environment variables are detected
+  console.log('🔍 Environment variable check:');
+  console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ SET' : '❌ NOT SET');
+  console.log('   SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ SET' : '❌ NOT SET');
+  console.log('   OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✅ SET' : '❌ NOT SET');
 
   // Test 2: Class instantiation (only if env vars are available)
   if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.OPENAI_API_KEY) {
@@ -47,8 +60,21 @@ async function testSemanticSearch() {
       process.exit(1);
     }
   } else {
-    console.log('⚠️  No environment variables provided, skipping credential tests');
-    console.log('   Set SUPABASE_URL, SUPABASE_ANON_KEY, and OPENAI_API_KEY to run full tests');
+    console.log('⚠️  Environment variables missing, skipping credential tests');
+    console.log('');
+    console.log('To test with real credentials, either:');
+    console.log('');
+    console.log('1. Export variables and run test:');
+    console.log('   export SUPABASE_URL="https://your-project.supabase.co"');
+    console.log('   export SUPABASE_ANON_KEY="eyJhbGc..."');
+    console.log('   export OPENAI_API_KEY="sk-..."');
+    console.log('   npm test');
+    console.log('');
+    console.log('2. Create a .env file and use test:env script:');
+    console.log('   echo "SUPABASE_URL=https://your-project.supabase.co" > .env');
+    console.log('   echo "SUPABASE_ANON_KEY=eyJhbGc..." >> .env');
+    console.log('   echo "OPENAI_API_KEY=sk-..." >> .env');
+    console.log('   npm run test:env');
   }
 
   console.log('✅ All validation tests passed! Package is ready for use.');

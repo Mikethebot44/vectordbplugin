@@ -32,6 +32,7 @@
     "postbuild": "chmod +x dist/cli.js",
     "dev": "tsc --watch",
     "test": "node test/example.js",
+    "test:env": "node -r dotenv/config test/example.js",
     "prepublishOnly": "npm run build && npm test",
     "clean": "rm -rf dist"
   },
@@ -39,21 +40,18 @@
     "@supabase/supabase-js": "^2.38.0",
     "openai": "^4.28.0"
   },
-  "peerDependencies": {
-    "@supabase/supabase-js": ">=2.0.0",
-    "openai": ">=4.0.0"
-  },
   "devDependencies": {
-    "typescript": "^5.3.0",
-    "@types/node": "^20.10.0"
+    "@types/node": "^20.10.0",
+    "dotenv": "^17.2.1",
+    "typescript": "^5.3.0"
   },
   "keywords": [
-    "supabase", 
-    "semantic-search", 
-    "vector-database", 
-    "embeddings", 
-    "openai", 
-    "pgvector", 
+    "supabase",
+    "semantic-search",
+    "vector-database",
+    "embeddings",
+    "openai",
+    "pgvector",
     "similarity-search",
     "ai",
     "machine-learning"
