@@ -67,6 +67,92 @@ export interface HybridSearchResultItem {
 }
 
 /**
+ * Queue status information from observability system
+ */
+export interface QueueStatus {
+  queue: {
+    total_messages: number;
+    pending_messages: number;
+    processing_messages: number;
+  };
+  processing: {
+    total_processed: number;
+    completed_today: number;
+    failed_today: number;
+    avg_processing_time_ms: number;
+    success_rate_24h: number;
+  };
+  failures: {
+    recent_failures: number;
+    failure_types: Record<string, number>;
+    stuck_jobs: number;
+  };
+  last_updated: string;
+}
+
+/**
+ * Job history entry
+ */
+export interface JobHistoryEntry {
+  id: number;
+  msg_id: number;
+  table_name: string;
+  row_id: string;
+  status: 'processing' | 'completed' | 'failed';
+  error_message: string | null;
+  error_type: string | null;
+  processing_time_ms: number | null;
+  retry_count: number;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Failed job information
+ */
+export interface FailedJob {
+  id: number;
+  msg_id: number;
+  table_name: string;
+  row_id: string;
+  error_message: string | null;
+  error_type: string | null;
+  retry_count: number;
+  last_failure_at: string;
+  can_retry: boolean;
+}
+
+/**
+ * Processing metrics and performance data
+ */
+export interface ProcessingMetrics {
+  time_window_hours: number;
+  summary: {
+    total_completed: number;
+    total_failed: number;
+    avg_processing_time: number;
+    median_processing_time: number;
+    p95_processing_time: number;
+    max_processing_time: number;
+  };
+  hourly_data: Array<{
+    hour: string;
+    completed: number;
+    failed: number;
+    avg_time_ms: number;
+  }>;
+  generated_at: string;
+}
+
+/**
+ * Result from retrying failed jobs
+ */
+export interface RetryResult {
+  retried_jobs: number;
+  timestamp: string;
+}
+
+/**
  * Main class for Supabase Semantic Search functionality
  * 
  * Provides easy-to-use semantic search capabilities with automatic embedding generation
@@ -530,6 +616,227 @@ export class SupabaseSemanticSearch {
       return { 
         data: null, 
         error: error instanceof Error ? error : new Error('Unknown error occurred') 
+      };
+    }
+  }
+
+  /**
+   * Get comprehensive queue status including pending jobs, processing metrics, and failures
+   * 
+   * @returns Promise with queue status data or error
+   * 
+   * @example
+   * ```typescript
+   * const status = await semanticSearch.getQueueStatus();
+   * if (status.error) {
+   *   console.error('Failed to get queue status:', status.error);
+   * } else {
+   *   console.log('Pending jobs:', status.data.queue.pending_messages);
+   *   console.log('Success rate:', status.data.processing.success_rate_24h + '%');
+   * }
+   * ```
+   */
+  async getQueueStatus(): Promise<{ data: QueueStatus | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_embedding_queue_status');
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as QueueStatus, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get recent job processing history
+   * 
+   * @param limit - Maximum number of jobs to return (default: 50)
+   * @param statusFilter - Filter by job status ('processing', 'completed', 'failed')
+   * @returns Promise with job history data or error
+   * 
+   * @example
+   * ```typescript
+   * // Get last 20 failed jobs
+   * const history = await semanticSearch.getJobHistory(20, 'failed');
+   * if (!history.error) {
+   *   history.data?.forEach(job => {
+   *     console.log(`Job ${job.msg_id}: ${job.error_message}`);
+   *   });
+   * }
+   * ```
+   */
+  async getJobHistory(
+    limit: number = 50, 
+    statusFilter?: 'processing' | 'completed' | 'failed'
+  ): Promise<{ data: JobHistoryEntry[] | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_embedding_job_history', {
+        limit_count: limit,
+        status_filter: statusFilter || null
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as JobHistoryEntry[], error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get failed jobs with retry information
+   * 
+   * @param includeRetried - Include jobs that have already been retried (default: false)
+   * @returns Promise with failed jobs data or error
+   * 
+   * @example
+   * ```typescript
+   * const failedJobs = await semanticSearch.getFailedJobs();
+   * if (!failedJobs.error) {
+   *   const retryableJobs = failedJobs.data?.filter(job => job.can_retry) || [];
+   *   console.log(`${retryableJobs.length} jobs can be retried`);
+   * }
+   * ```
+   */
+  async getFailedJobs(
+    includeRetried: boolean = false
+  ): Promise<{ data: FailedJob[] | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_failed_embedding_jobs', {
+        include_retried: includeRetried
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as FailedJob[], error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Retry failed jobs that are eligible for retry
+   * 
+   * @param maxRetries - Maximum retry count for jobs (default: 3)
+   * @param minAgeMinutes - Minimum age in minutes before retrying (default: 5)
+   * @returns Promise with retry result or error
+   * 
+   * @example
+   * ```typescript
+   * const result = await semanticSearch.retryFailedJobs();
+   * if (!result.error) {
+   *   console.log(`Retried ${result.data.retried_jobs} failed jobs`);
+   * }
+   * ```
+   */
+  async retryFailedJobs(
+    maxRetries: number = 3,
+    minAgeMinutes: number = 5
+  ): Promise<{ data: RetryResult | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('retry_failed_jobs', {
+        max_retries: maxRetries,
+        min_age_minutes: minAgeMinutes
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as RetryResult, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get detailed processing metrics and performance data
+   * 
+   * @param timeWindowHours - Time window in hours for metrics (default: 24)
+   * @returns Promise with processing metrics or error
+   * 
+   * @example
+   * ```typescript
+   * // Get performance metrics for last 12 hours
+   * const metrics = await semanticSearch.getProcessingMetrics(12);
+   * if (!metrics.error) {
+   *   console.log('Average processing time:', metrics.data.summary.avg_processing_time + 'ms');
+   *   console.log('95th percentile:', metrics.data.summary.p95_processing_time + 'ms');
+   * }
+   * ```
+   */
+  async getProcessingMetrics(
+    timeWindowHours: number = 24
+  ): Promise<{ data: ProcessingMetrics | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('get_processing_metrics', {
+        time_window_hours: timeWindowHours
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data: data as ProcessingMetrics, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Clean up old job logs to maintain database performance
+   * 
+   * @param keepDays - Number of days to keep logs (default: 30)
+   * @returns Promise with cleanup result or error
+   * 
+   * @example
+   * ```typescript
+   * // Clean up logs older than 7 days
+   * const result = await semanticSearch.cleanupJobLogs(7);
+   * if (!result.error) {
+   *   console.log(`Cleaned up ${result.data.deleted_records} old job logs`);
+   * }
+   * ```
+   */
+  async cleanupJobLogs(
+    keepDays: number = 30
+  ): Promise<{ data: { deleted_records: number; cleanup_date: string } | null; error: Error | null }> {
+    try {
+      const { data, error } = await this.supabase.rpc('cleanup_job_logs', {
+        keep_days: keepDays
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
       };
     }
   }
