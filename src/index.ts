@@ -1,5 +1,14 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import {
+  AIClient,
+  createAIClient,
+  EmbeddingProvider,
+  ProviderConfig,
+  AIClientConfig,
+  PROVIDER_INFO,
+  getProviderRecommendation
+} from './providers';
 
 /**
  * Options for semantic search operations
@@ -67,38 +76,78 @@ export interface HybridSearchResultItem {
 }
 
 /**
+ * Configuration for SupabaseSemanticSearch with multi-model support
+ */
+export interface SemanticSearchConfig {
+  /** Supabase project URL */
+  supabaseUrl: string;
+  /** Supabase project API key (anon or service_role) */
+  supabaseKey: string;
+  /** AI provider configuration */
+  aiProvider: ProviderConfig;
+  /** Optional fallback providers */
+  fallbackProviders?: ProviderConfig[];
+  /** Enable automatic fallback on provider errors */
+  enableFallback?: boolean;
+}
+
+/**
+ * Legacy configuration for backward compatibility
+ */
+export interface LegacySemanticSearchConfig {
+  supabaseUrl: string;
+  supabaseKey: string;
+  openaiApiKey: string;
+}
+
+/**
  * Main class for Supabase Semantic Search functionality
  * 
  * Provides easy-to-use semantic search capabilities with automatic embedding generation
- * using OpenAI's text-embedding-3-small model and Supabase's pgvector extension.
+ * supporting multiple AI providers (OpenAI, Cohere, Voyage) and Supabase's pgvector extension.
  */
 export class SupabaseSemanticSearch {
   private supabase: SupabaseClient;
-  private openai: OpenAI;
+  private aiClient: AIClient;
+  private openai?: OpenAI; // Kept for backward compatibility
 
   /**
    * Create a new SupabaseSemanticSearch instance
-   * 
-   * @param supabaseUrl - Your Supabase project URL
-   * @param supabaseKey - Your Supabase project API key (anon or service_role)
-   * @param openaiApiKey - Your OpenAI API key for generating embeddings
-   * 
-   * @example
-   * ```typescript
-   * const semanticSearch = new SupabaseSemanticSearch(
-   *   'https://your-project.supabase.co',
-   *   'your-anon-key',
-   *   'sk-your-openai-key'
-   * );
-   * ```
    */
+  constructor(config: SemanticSearchConfig);
+  constructor(supabaseUrl: string, supabaseKey: string, openaiApiKey: string);
   constructor(
-    supabaseUrl: string,
-    supabaseKey: string,
-    openaiApiKey: string
+    configOrUrl: SemanticSearchConfig | string,
+    supabaseKey?: string,
+    openaiApiKey?: string
   ) {
-    this.supabase = createClient(supabaseUrl, supabaseKey);
-    this.openai = new OpenAI({ apiKey: openaiApiKey });
+    if (typeof configOrUrl === 'string') {
+      // Legacy constructor for backward compatibility
+      if (!supabaseKey || !openaiApiKey) {
+        throw new Error('Missing required parameters for legacy constructor');
+      }
+      
+      this.supabase = createClient(configOrUrl, supabaseKey);
+      this.openai = new OpenAI({ apiKey: openaiApiKey });
+      this.aiClient = createAIClient('openai', openaiApiKey);
+    } else {
+      // New multi-model constructor
+      const config = configOrUrl;
+      this.supabase = createClient(config.supabaseUrl, config.supabaseKey);
+      
+      const aiClientConfig: AIClientConfig = {
+        provider: config.aiProvider,
+        fallbackProviders: config.fallbackProviders,
+        enableFallback: config.enableFallback
+      };
+      
+      this.aiClient = new AIClient(aiClientConfig);
+      
+      // Create legacy OpenAI client if using OpenAI provider for backward compatibility
+      if (config.aiProvider.provider === 'openai') {
+        this.openai = new OpenAI({ apiKey: config.aiProvider.apiKey });
+      }
+    }
   }
 
   /**
@@ -131,13 +180,9 @@ export class SupabaseSemanticSearch {
     const { topK = 5, threshold = 0.7 } = options;
 
     try {
-      // Generate embedding for query
-      const embeddingResponse = await this.openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: query,
-      });
-
-      const queryEmbedding = embeddingResponse.data[0].embedding;
+      // Generate embedding for query using AIClient
+      const embeddingResult = await this.aiClient.embed(query);
+      const queryEmbedding = embeddingResult.embedding;
 
       // Perform semantic search
       const { data, error } = await this.supabase.rpc('semantic_search', {
@@ -187,12 +232,9 @@ export class SupabaseSemanticSearch {
     const { topK = 5, threshold = 0.7 } = options;
 
     try {
-      const embeddingResponse = await this.openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: query,
-      });
-
-      const queryEmbedding = embeddingResponse.data[0].embedding;
+      // Generate embedding for query using AIClient
+      const embeddingResult = await this.aiClient.embed(query);
+      const queryEmbedding = embeddingResult.embedding;
 
       const { data, error } = await this.supabase.rpc('search_documents', {
         query_embedding: `[${queryEmbedding.join(',')}]`,
@@ -336,13 +378,9 @@ export class SupabaseSemanticSearch {
     } = options;
 
     try {
-      // Generate embedding for query
-      const embeddingResponse = await this.openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: query,
-      });
-
-      const queryEmbedding = embeddingResponse.data[0].embedding;
+      // Generate embedding for query using AIClient
+      const embeddingResult = await this.aiClient.embed(query);
+      const queryEmbedding = embeddingResult.embedding;
 
       // Use server-side hybrid search if normalization is min-max (default)
       if (normalization === 'min-max') {
@@ -492,12 +530,9 @@ export class SupabaseSemanticSearch {
     } = options;
 
     try {
-      const embeddingResponse = await this.openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: query,
-      });
-
-      const queryEmbedding = embeddingResponse.data[0].embedding;
+      // Generate embedding for query using AIClient
+      const embeddingResult = await this.aiClient.embed(query);
+      const queryEmbedding = embeddingResult.embedding;
 
       // Use server-side hybrid search function for documents
       const { data, error } = await this.supabase.rpc('hybrid_search_documents', {
@@ -535,6 +570,198 @@ export class SupabaseSemanticSearch {
   }
 
   /**
+   * Get information about the current AI provider
+   * 
+   * @returns Provider information including capabilities and limitations
+   */
+  getProviderInfo() {
+    return this.aiClient.getProviderInfo();
+  }
+
+  /**
+   * Switch to a different AI provider
+   * 
+   * @param newProvider - Configuration for the new provider
+   * 
+   * @example
+   * ```typescript
+   * // Switch from OpenAI to Cohere
+   * semanticSearch.switchProvider({
+   *   provider: 'cohere',
+   *   apiKey: 'your-cohere-key',
+   *   model: 'embed-english-v3.0'
+   * });
+   * ```
+   */
+  switchProvider(newProvider: ProviderConfig): void {
+    this.aiClient.switchProvider(newProvider);
+    
+    // Update legacy OpenAI client if switching to OpenAI
+    if (newProvider.provider === 'openai') {
+      this.openai = new OpenAI({ apiKey: newProvider.apiKey });
+    } else {
+      this.openai = undefined;
+    }
+  }
+
+  /**
+   * Add a fallback provider for automatic failover
+   * 
+   * @param fallbackProvider - Configuration for the fallback provider
+   * 
+   * @example
+   * ```typescript
+   * // Add Cohere as fallback if OpenAI fails
+   * semanticSearch.addFallbackProvider({
+   *   provider: 'cohere',
+   *   apiKey: 'your-cohere-key'
+   * });
+   * ```
+   */
+  addFallbackProvider(fallbackProvider: ProviderConfig): void {
+    this.aiClient.addFallbackProvider(fallbackProvider);
+  }
+
+  /**
+   * Validate that all configured providers are working
+   * 
+   * @returns Array of validation results for each provider
+   * 
+   * @example
+   * ```typescript
+   * const results = await semanticSearch.validateProviders();
+   * results.forEach(result => {
+   *   console.log(`${result.provider}: ${result.isValid ? 'OK' : 'Failed'}`);
+   * });
+   * ```
+   */
+  async validateProviders() {
+    return this.aiClient.validateAllProviders();
+  }
+
+  /**
+   * Get embedding dimensions for the current provider
+   * 
+   * @returns Number of dimensions in embeddings generated by current provider
+   */
+  getEmbeddingDimensions(): number {
+    return this.aiClient.getDimensions();
+  }
+
+  /**
+   * Get provider statistics for a table
+   * 
+   * @param tableName - Name of the table to analyze
+   * @returns Statistics about providers used in the table
+   * 
+   * @example
+   * ```typescript
+   * const stats = await semanticSearch.getProviderStats('documents');
+   * console.log('Provider usage:', stats.data);
+   * ```
+   */
+  async getProviderStats(tableName: string) {
+    try {
+      const { data, error } = await this.supabase.rpc('get_provider_stats', {
+        table_name: tableName
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Migrate embeddings from one provider to another
+   * 
+   * @param tableName - Name of the table to migrate
+   * @param fromProvider - Current provider name
+   * @param fromModel - Current model name
+   * @param toProvider - New provider name  
+   * @param toModel - New model name
+   * @returns Number of rows affected
+   * 
+   * @example
+   * ```typescript
+   * // Migrate from OpenAI to Cohere
+   * const count = await semanticSearch.migrateProvider(
+   *   'documents',
+   *   'openai', 'text-embedding-3-small',
+   *   'cohere', 'embed-english-v3.0'
+   * );
+   * console.log(`Migrated ${count} documents`);
+   * ```
+   */
+  async migrateProvider(
+    tableName: string,
+    fromProvider: string,
+    fromModel: string,
+    toProvider: EmbeddingProvider,
+    toModel: string
+  ) {
+    try {
+      // Get dimensions for the new provider
+      const newClient = createAIClient(toProvider, 'dummy-key', { model: toModel });
+      const newDimensions = newClient.getDimensions();
+
+      const { data, error } = await this.supabase.rpc('migrate_embeddings_provider', {
+        table_name: tableName,
+        old_provider: fromProvider,
+        old_model: fromModel,
+        new_provider: toProvider,
+        new_model: toModel,
+        new_dimensions: newDimensions
+      });
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+
+      return { data, error: null };
+    } catch (error) {
+      return {
+        data: null,
+        error: error instanceof Error ? error : new Error('Unknown error occurred')
+      };
+    }
+  }
+
+  /**
+   * Get recommended provider for a specific use case
+   * 
+   * @param useCase - The intended use case
+   * @returns Recommended provider configuration
+   * 
+   * @example
+   * ```typescript
+   * const recommendation = SupabaseSemanticSearch.getProviderRecommendation('code');
+   * console.log(recommendation); // { provider: 'voyage', model: 'voyage-code-2', ... }
+   * ```
+   */
+  static getProviderRecommendation(
+    useCase: 'general' | 'code' | 'multilingual' | 'cost' | 'performance'
+  ) {
+    return getProviderRecommendation(useCase);
+  }
+
+  /**
+   * Get information about all available providers
+   * 
+   * @returns Information about all supported providers
+   */
+  static getProviderInfo() {
+    return PROVIDER_INFO;
+  }
+
+  /**
    * Get the underlying Supabase client for direct database operations
    * 
    * @returns The Supabase client instance used by this semantic search instance
@@ -551,7 +778,7 @@ export class SupabaseSemanticSearch {
 }
 
 /**
- * Convenience function to create a new SupabaseSemanticSearch instance
+ * Convenience function to create a new SupabaseSemanticSearch instance (legacy)
  * 
  * @param supabaseUrl - Your Supabase project URL
  * @param supabaseKey - Your Supabase project API key
@@ -579,5 +806,124 @@ export function createSemanticSearch(
 ): SupabaseSemanticSearch {
   return new SupabaseSemanticSearch(supabaseUrl, supabaseKey, openaiApiKey);
 }
+
+/**
+ * Create a SupabaseSemanticSearch instance with multi-model support
+ * 
+ * @param config - Configuration object with provider settings
+ * @returns A new SupabaseSemanticSearch instance
+ * 
+ * @example
+ * ```typescript
+ * import { createSemanticSearchWithProvider } from 'supabase-semantic-search';
+ * 
+ * const semanticSearch = createSemanticSearchWithProvider({
+ *   supabaseUrl: process.env.SUPABASE_URL!,
+ *   supabaseKey: process.env.SUPABASE_ANON_KEY!,
+ *   aiProvider: {
+ *     provider: 'cohere',
+ *     apiKey: process.env.COHERE_API_KEY!,
+ *     model: 'embed-english-v3.0'
+ *   },
+ *   enableFallback: true,
+ *   fallbackProviders: [{
+ *     provider: 'openai',
+ *     apiKey: process.env.OPENAI_API_KEY!
+ *   }]
+ * });
+ * ```
+ */
+export function createSemanticSearchWithProvider(
+  config: SemanticSearchConfig
+): SupabaseSemanticSearch {
+  return new SupabaseSemanticSearch(config);
+}
+
+/**
+ * Create a SupabaseSemanticSearch instance with OpenAI provider
+ */
+export function createWithOpenAI(
+  supabaseUrl: string,
+  supabaseKey: string,
+  openaiApiKey: string,
+  model: string = 'text-embedding-3-small'
+): SupabaseSemanticSearch {
+  return new SupabaseSemanticSearch({
+    supabaseUrl,
+    supabaseKey,
+    aiProvider: {
+      provider: 'openai',
+      apiKey: openaiApiKey,
+      model
+    }
+  });
+}
+
+/**
+ * Create a SupabaseSemanticSearch instance with Cohere provider
+ */
+export function createWithCohere(
+  supabaseUrl: string,
+  supabaseKey: string,
+  cohereApiKey: string,
+  model: string = 'embed-english-v3.0'
+): SupabaseSemanticSearch {
+  return new SupabaseSemanticSearch({
+    supabaseUrl,
+    supabaseKey,
+    aiProvider: {
+      provider: 'cohere',
+      apiKey: cohereApiKey,
+      model
+    }
+  });
+}
+
+/**
+ * Create a SupabaseSemanticSearch instance with Voyage provider
+ */
+export function createWithVoyage(
+  supabaseUrl: string,
+  supabaseKey: string,
+  voyageApiKey: string,
+  model: string = 'voyage-large-2'
+): SupabaseSemanticSearch {
+  return new SupabaseSemanticSearch({
+    supabaseUrl,
+    supabaseKey,
+    aiProvider: {
+      provider: 'voyage',
+      apiKey: voyageApiKey,
+      model
+    }
+  });
+}
+
+// Export all provider-related functionality
+export {
+  // Provider types and interfaces
+  type EmbeddingProvider,
+  type ProviderConfig,
+  type AIClientConfig,
+  type IEmbeddingProvider,
+  type EmbeddingResult,
+  type BatchEmbeddingResult,
+  type ProviderInfo,
+  EmbeddingProviderError,
+  
+  // Provider implementations
+  OpenAIEmbeddingProvider,
+  CohereEmbeddingProvider,
+  VoyageEmbeddingProvider,
+  AnthropicEmbeddingProvider,
+  
+  // AI Client
+  AIClient,
+  createAIClient,
+  
+  // Provider utilities
+  PROVIDER_INFO,
+  getProviderRecommendation
+} from './providers';
 
 export default SupabaseSemanticSearch;

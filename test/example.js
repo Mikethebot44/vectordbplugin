@@ -5,7 +5,14 @@ try {
   // dotenv not available, that's fine
 }
 
-const { createSemanticSearch, SupabaseSemanticSearch } = require('../dist/index.js');
+const { 
+  createSemanticSearch, 
+  SupabaseSemanticSearch,
+  createSemanticSearchWithProvider,
+  createWithCohere,
+  createWithVoyage,
+  PROVIDER_INFO
+} = require('../dist/index.js');
 
 async function testSemanticSearch() {
   console.log('🧪 Running Supabase Semantic Search validation tests...');
@@ -18,9 +25,88 @@ async function testSemanticSearch() {
     if (typeof SupabaseSemanticSearch !== 'function') {
       throw new Error('SupabaseSemanticSearch export is not a function');
     }
-    console.log('✅ Module imports work correctly');
+    if (typeof createSemanticSearchWithProvider !== 'function') {
+      throw new Error('createSemanticSearchWithProvider export is not a function');
+    }
+    if (typeof createWithCohere !== 'function') {
+      throw new Error('createWithCohere export is not a function');
+    }
+    if (typeof createWithVoyage !== 'function') {
+      throw new Error('createWithVoyage export is not a function');
+    }
+    if (typeof PROVIDER_INFO !== 'object') {
+      throw new Error('PROVIDER_INFO export is not an object');
+    }
+    console.log('✅ Module imports work correctly (including multi-model functions)');
   } catch (error) {
     console.error('❌ Module import test failed:', error.message);
+    process.exit(1);
+  }
+
+  // Test 2: Provider info and recommendations
+  try {
+    const providerInfo = SupabaseSemanticSearch.getProviderInfo();
+    if (!providerInfo || typeof providerInfo !== 'object') {
+      throw new Error('getProviderInfo should return an object');
+    }
+
+    const recommendation = SupabaseSemanticSearch.getProviderRecommendation('general');
+    if (!recommendation || !recommendation.primary || !recommendation.model) {
+      throw new Error('getProviderRecommendation should return primary and model');
+    }
+    
+    console.log('✅ Provider information and recommendations work correctly');
+    console.log('   Sample recommendation for general use:', recommendation.primary, recommendation.model);
+  } catch (error) {
+    console.error('❌ Provider info test failed:', error.message);
+    process.exit(1);
+  }
+
+  // Test 3: Multi-model instantiation (without credentials)
+  try {
+    // Test different instantiation methods with dummy credentials
+    const dummyUrl = 'https://dummy.supabase.co';
+    const dummyKey = 'dummy-key';
+    const dummyApiKey = 'dummy-api-key';
+
+    // Legacy constructor
+    const legacyInstance = createSemanticSearch(dummyUrl, dummyKey, dummyApiKey);
+    if (!legacyInstance || typeof legacyInstance.getProviderInfo !== 'function') {
+      throw new Error('Legacy constructor failed to create valid instance');
+    }
+
+    // Multi-model constructor
+    const multiModelInstance = createSemanticSearchWithProvider({
+      supabaseUrl: dummyUrl,
+      supabaseKey: dummyKey,
+      aiProvider: {
+        provider: 'cohere',
+        apiKey: dummyApiKey,
+        model: 'embed-english-v3.0'
+      }
+    });
+    if (!multiModelInstance || multiModelInstance.getProviderInfo().provider !== 'cohere') {
+      throw new Error('Multi-model constructor failed');
+    }
+
+    // Provider-specific constructors
+    const cohereInstance = createWithCohere(dummyUrl, dummyKey, dummyApiKey);
+    if (!cohereInstance || cohereInstance.getProviderInfo().provider !== 'cohere') {
+      throw new Error('Cohere constructor failed');
+    }
+
+    const voyageInstance = createWithVoyage(dummyUrl, dummyKey, dummyApiKey);
+    if (!voyageInstance || voyageInstance.getProviderInfo().provider !== 'voyage') {
+      throw new Error('Voyage constructor failed');
+    }
+
+    console.log('✅ All instantiation methods work correctly');
+    console.log('   Legacy instance provider:', legacyInstance.getProviderInfo().provider);
+    console.log('   Multi-model instance provider:', multiModelInstance.getProviderInfo().provider);
+    console.log('   Cohere instance dimensions:', cohereInstance.getEmbeddingDimensions());
+    console.log('   Voyage instance dimensions:', voyageInstance.getEmbeddingDimensions());
+  } catch (error) {
+    console.error('❌ Multi-model instantiation test failed:', error.message);
     process.exit(1);
   }
 
@@ -29,8 +115,11 @@ async function testSemanticSearch() {
   console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ SET' : '❌ NOT SET');
   console.log('   SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ SET' : '❌ NOT SET');
   console.log('   OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✅ SET' : '❌ NOT SET');
+  console.log('   COHERE_API_KEY:', process.env.COHERE_API_KEY ? '✅ SET' : '❌ NOT SET');
+  console.log('   VOYAGE_API_KEY:', process.env.VOYAGE_API_KEY ? '✅ SET' : '❌ NOT SET');
+  console.log('   AI_PROVIDER:', process.env.AI_PROVIDER ? `✅ SET (${process.env.AI_PROVIDER})` : '❌ NOT SET');
 
-  // Test 2: Class instantiation (only if env vars are available)
+  // Test 4: Real API testing (only if env vars are available)
   if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.OPENAI_API_KEY) {
     try {
       console.log('🔑 Environment variables detected, testing with real credentials...');
