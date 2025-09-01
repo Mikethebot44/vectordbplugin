@@ -1,13 +1,21 @@
-// Try to load dotenv for development convenience
-try {
-  require('dotenv').config();
-} catch (e) {
-  // dotenv not available, that's fine
+let createSemanticSearch, SupabaseSemanticSearch;
+
+async function loadModules() {
+  // Try to load dotenv for development convenience
+  try {
+    const dotenv = await import('dotenv');
+    dotenv.config();
+  } catch (e) {
+    // dotenv not available, that's fine
+  }
+
+  const module = await import('../dist/index.mjs');
+  createSemanticSearch = module.createSemanticSearch;
+  SupabaseSemanticSearch = module.SupabaseSemanticSearch;
 }
 
-const { createSemanticSearch, SupabaseSemanticSearch } = require('../dist/index.js');
-
 async function testSemanticSearch() {
+  await loadModules();
   console.log('🧪 Running Supabase Semantic Search validation tests...');
 
   // Test 1: Module imports
@@ -26,14 +34,30 @@ async function testSemanticSearch() {
 
   // Debug: Show what environment variables are detected
   console.log('🔍 Environment variable check:');
-  console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ SET' : '❌ NOT SET');
-  console.log('   SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ SET' : '❌ NOT SET');
-  console.log('   OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✅ SET' : '❌ NOT SET');
+  
+  if (process.env.SUPABASE_URL) {
+    console.log('✅ Supabase URL variable set');
+  } else {
+    console.log('❌ Supabase URL variable not set');
+  }
+  
+  if (process.env.SUPABASE_ANON_KEY) {
+    console.log('✅ Supabase Anon Key variable set');
+  } else {
+    console.log('❌ Supabase Anon Key variable not set');
+  }
+  
+  if (process.env.OPENAI_API_KEY) {
+    console.log('✅ OpenAI API Key variable set');
+  } else {
+    console.log('❌ OpenAI API Key variable not set');
+  }
 
   // Test 2: Class instantiation (only if env vars are available)
   if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.OPENAI_API_KEY) {
     try {
       console.log('🔑 Environment variables detected, testing with real credentials...');
+      console.log('📡 Attempting to connect to Supabase...');
       
       const semanticSearch = createSemanticSearch(
         process.env.SUPABASE_URL,
@@ -41,9 +65,11 @@ async function testSemanticSearch() {
         process.env.OPENAI_API_KEY
       );
 
+      console.log('✅ Successfully connected to Supabase');
       console.log('✅ Instance created successfully with environment credentials');
       
       // Test basic search (this might fail if DB isn't set up, which is expected)
+      console.log('🔍 Testing semantic search functionality...');
       try {
         const results = await semanticSearch.searchDocuments('test query', { topK: 1 });
         if (results.error) {
@@ -56,6 +82,7 @@ async function testSemanticSearch() {
       }
 
       // Test hybrid search (this might fail if DB isn't set up, which is expected)
+      console.log('🔄 Testing hybrid search functionality...');
       try {
         const hybridResults = await semanticSearch.hybridSearchDocuments('apple earnings', { 
           topK: 1,
@@ -103,8 +130,8 @@ async function testSemanticSearch() {
 }
 
 // Only run if this file is executed directly
-if (require.main === module) {
+if (import.meta.url === new URL(process.argv[1], 'file:').href) {
   testSemanticSearch();
 }
 
-module.exports = { testSemanticSearch };
+export { testSemanticSearch };
